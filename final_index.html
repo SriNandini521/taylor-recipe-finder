@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Cook With What You Have — Taylor</title>
+    <style>
+      :root{
+        --bg:#f7f8fb;--card:#ffffff;--muted:#6b7280;--accent:#2563eb;--accent-600:#1d4ed8;--danger:#ef4444;
+        --radius:12px;--shadow:0 6px 20px rgba(16,24,40,0.06);
+      }
+      *{box-sizing:border-box}
+      html,body,#root{height:100%}
+      body{margin:0;font-family:Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; background:var(--bg);color:#0f172a}
+      .container{max-width:1100px;margin:28px auto;padding:20px}
+      header{display:flex;align-items:center;justify-content:space-between;gap:16px}
+      .brand{display:flex;align-items:center;gap:12px}
+      .logo{width:48px;height:48px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent-600));display:flex;align-items:center;justify-content:center;color:white;font-weight:700}
+      h1{font-size:18px;margin:0}
+      p.lead{margin:0;color:var(--muted);font-size:13px}
+
+      .card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px;margin-top:18px}
+      form.search{display:flex;gap:8px;flex-wrap:wrap}
+      input[type=text]{flex:1;min-width:220px;padding:12px 14px;border-radius:10px;border:1px solid #e6eef8;font-size:15px}
+      button{background:var(--accent);color:white;border:0;padding:10px 14px;border-radius:10px;font-weight:600;cursor:pointer}
+      button.secondary{background:transparent;color:var(--accent);border:1px solid rgba(37,99,235,0.12)}
+      .info{margin-top:14px;color:var(--muted);font-size:13px}
+
+      .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-top:18px}
+      .meal{display:flex;flex-direction:column;background:linear-gradient(180deg,rgba(0,0,0,0.02),transparent);border-radius:10px;overflow:hidden}
+      .meal img{width:100%;height:150px;object-fit:cover}
+      .meal-body{padding:12px;display:flex;flex-direction:column;gap:8px}
+      .meal h3{margin:0;font-size:15px}
+      .tags{display:flex;gap:8px;flex-wrap:wrap}
+      .pill{font-size:12px;padding:6px 8px;border-radius:999px;background:rgba(15,23,42,0.04);color:var(--muted)}
+      .meal-actions{margin-top:auto;display:flex;gap:8px}
+
+      .empty{padding:28px;text-align:center;color:var(--muted)}
+
+      /* modal */
+      .modal-backdrop{position:fixed;inset:0;background:rgba(2,6,23,0.5);display:flex;align-items:center;justify-content:center;z-index:60}
+      .modal{width:95%;max-width:760px;background:var(--card);border-radius:12px;padding:18px;box-shadow:0 12px 40px rgba(2,6,23,0.3);max-height:88vh;overflow:auto}
+      .modal h2{margin:0 0 8px}
+      .modal .meta{color:var(--muted);font-size:13px;margin-bottom:12px}
+      .ingredients{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px}
+      .ingredient{background:#f3f6fb;padding:8px;border-radius:8px;font-size:14px}
+
+      footer{margin-top:24px;color:var(--muted);font-size:13px;display:flex;justify-content:space-between;align-items:center}
+
+      /* responsive tweaks */
+      @media (max-width:640px){.meal img{height:130px}.logo{width:40px;height:40px}}
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!-- React + ReactDOM + Babel UMD for single-file dev-in-browser -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/babel-standalone@6.26.0/babel.min.js"></script>
+
+    <script type="text/babel">
+      const {useState, useEffect, useRef} = React;
+
+      const API = {
+        filterByIngredient: (ingredient) => `https://www.themealdb.com/api/json/v1/1/filter.php?i=${encodeURIComponent(ingredient)}`,
+        lookupById: (id) => `https://www.themealdb.com/api/json/v1/1/lookup.php?i=${id}`
+      };
+
+      function useLocalStorage(key, initial){
+        const [state, setState] = useState(()=>{
+          try{const raw=localStorage.getItem(key);return raw?JSON.parse(raw):initial}catch(e){return initial}
+        });
+        useEffect(()=>{try{localStorage.setItem(key,JSON.stringify(state))}catch(e){console.warn('ls failed',e)}},[key,state]);
+        return [state,setState];
+      }
+
+      function App(){
+        const [query,setQuery] = useState('');
+        const [loading,setLoading] = useState(false);
+        const [meals,setMeals] = useState([]);
+        const [error,setError] = useState(null);
+        const [modalMeal,setModalMeal] = useState(null);
+        const [favorites,setFavorites] = useLocalStorage('taylor_favorites', []);
+        const inputRef = useRef(null);
+
+        useEffect(()=>{inputRef.current && inputRef.current.focus()},[]);
+
+        async function handleSearch(e){
+          e && e.preventDefault();
+          setError(null);
+          const raw = query.trim();
+          if(!raw){setMeals([]);setError('Please type one or more ingredients (comma-separated).');return}
+          const ingredients = raw.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
+          if(ingredients.length===0){setMeals([]);return}
+
+          setLoading(true);
+          try{
+            // For each ingredient, fetch the list then intersect by idMeal
+            const lists = await Promise.all(ingredients.map(async ing=>{
+              const res = await fetch(API.filterByIngredient(ing));
+              if(!res.ok) throw new Error('Network error');
+              const data = await res.json();
+              return data.meals || [];
+            }));
+
+            // intersect based on idMeal
+            const byId = lists.map(list => new Set(list.map(m => m.idMeal)));
+            const intersection = lists.length ? lists[0].filter(m => byId.every(s => s.has(m.idMeal))) : [];
+
+            // If no intersection but at least one list had meals, we can optionally union and show ranked results.
+            // For simplicity: show intersection if non-empty, otherwise show union (unique) with a note.
+            let results = intersection;
+            let note = '';
+            if(results.length===0){
+              note = 'No meals matched all ingredients; showing meals that match any of the ingredients.';
+              const unionMap = new Map();
+              lists.flat().forEach(m=>unionMap.set(m.idMeal, m));
+              results = Array.from(unionMap.values());
+            }
+
+            setMeals(results);
+            if(note) setError(note); else setError(null);
+          }catch(err){console.error(err);setError('Failed to load meals. Please try again.');setMeals([])}
+          setLoading(false);
+        }
+
+        async function openDetails(id){
+          setModalMeal({loading:true});
+          try{
+            const res = await fetch(API.lookupById(id));
+            if(!res.ok) throw new Error('Network error');
+            const data = await res.json();
+            const meal = data.meals && data.meals[0];
+            if(!meal) throw new Error('Not found');
+            // parse ingredients
+            const ingredients = [];
+            for(let i=1;i<=20;i++){
+              const ing = meal['strIngredient'+i];
+              const measure = meal['strMeasure'+i];
+              if(ing && ing.trim()) ingredients.push({ingredient:ing.trim(), measure: measure?measure.trim():''});
+            }
+            setModalMeal({...meal, ingredients, loading:false});
+          }catch(e){console.error(e);setModalMeal({error:'Could not load details.', loading:false})}
+        }
+
+        function closeModal(){setModalMeal(null)}
+
+        function toggleFavorite(meal){
+          const exists = favorites.find(f => f.idMeal===meal.idMeal);
+          if(exists) setFavorites(favorites.filter(f=>f.idMeal!==meal.idMeal));
+          else setFavorites([...favorites, meal]);
+        }
+
+        function isFavorite(id){return favorites.some(f=>f.idMeal===id)}
+
+        return (
+          <div className="container">
+            <header>
+              <div className="brand">
+                <div className="logo" aria-hidden>TW</div>
+                <div>
+                  <h1>Cook With What You Have — Taylor</h1>
+                  <p className="lead">Type ingredients you have (comma-separated). The app finds recipes that include them.</p>
+                </div>
+              </div>
+              <div style={{textAlign:'right'}}>
+                <div style={{fontSize:12,color:'var(--muted)'}}>Quick actions</div>
+                <div style={{marginTop:6,display:'flex',gap:8}}>
+                  <button className="secondary" onClick={()=>{setQuery('chicken');handleSearch()}}>Example: chicken</button>
+                  <button onClick={()=>{setQuery('egg,milk');handleSearch()}}>Example: egg, milk</button>
+                </div>
+              </div>
+            </header>
+
+            <section className="card" aria-labelledby="search-heading">
+              <h2 id="search-heading" style={{fontSize:16,margin:0}}>Find recipes from ingredients</h2>
+              <form className="search" onSubmit={handleSearch} aria-describedby="search-help" style={{marginTop:12}}>
+                <label htmlFor="ingredients" style={{position:'absolute',left:-9999,top:'auto'}}>Ingredients (comma separated)</label>
+                <input id="ingredients" ref={inputRef} type="text" placeholder="eg. chicken, garlic, lemon" value={query} onChange={e=>setQuery(e.target.value)} aria-label="Ingredients (comma separated)" />
+                <button type="submit" aria-label="Search recipes">{loading? 'Searching...' : 'Search'}</button>
+                <button type="button" className="secondary" onClick={()=>{setQuery('');setMeals([]);setError(null);inputRef.current.focus()}}>Clear</button>
+              </form>
+              <div id="search-help" className="info">Tip: separate ingredients with commas. The app will attempt to find meals that contain all provided ingredients; if none exist, it will show meals matching any ingredient.</div>
+            </section>
+
+            <section className="card" aria-live="polite">
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <h3 style={{margin:0,fontSize:16}}>Results</h3>
+                <div style={{fontSize:13,color:'var(--muted)'}}>{meals.length} meals</div>
+              </div>
+
+              {error && <div className="info" role="status" style={{marginTop:12,color: 'var(--muted)'}}>{error}</div>}
+
+              <div className="grid" style={{marginTop:12}}>
+                {meals.length===0 && !loading && (
+                  <div className="empty">No meals to show. Try searching for ingredients you have at home.</div>
+                )}
+
+                {meals.map(meal=> (
+                  <article key={meal.idMeal} className="meal" aria-labelledby={`meal-${meal.idMeal}`}>
+                    <img src={meal.strMealThumb} alt={meal.strMeal} loading="lazy" />
+                    <div className="meal-body">
+                      <h3 id={`meal-${meal.idMeal}`}>{meal.strMeal}</h3>
+                      <div className="tags">
+                        <span className="pill">ID: {meal.idMeal}</span>
+                        <span className="pill">From TheMealDB</span>
+                      </div>
+                      <div className="meal-actions">
+                        <button onClick={()=>openDetails(meal.idMeal)} aria-label={`View details for ${meal.strMeal}`}>View Details</button>
+                        <button className="secondary" onClick={()=>toggleFavorite(meal)} aria-pressed={isFavorite(meal.idMeal)}>{isFavorite(meal.idMeal) ? 'Unsave' : 'Save to Favorites'}</button>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+
+            </section>
+
+            <section className="card" aria-labelledby="fav-heading">
+              <h3 id="fav-heading" style={{margin:0}}>Favorites</h3>
+              <div className="info" style={{marginTop:8}}>Meals you saved will persist in your browser.</div>
+              <div className="grid" style={{marginTop:12}}>
+                {favorites.length===0 && <div className="empty">No favorites yet. Save meals from results to see them here.</div>}
+                {favorites.map(meal=> (
+                  <article key={meal.idMeal} className="meal" aria-labelledby={`fav-${meal.idMeal}`}>
+                    <img src={meal.strMealThumb} alt={meal.strMeal} />
+                    <div className="meal-body">
+                      <h3 id={`fav-${meal.idMeal}`}>{meal.strMeal}</h3>
+                      <div className="meal-actions">
+                        <button onClick={()=>openDetails(meal.idMeal)}>View Details</button>
+                        <button className="secondary" onClick={()=>toggleFavorite(meal)}>Remove</button>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+
+            <footer>
+              <div>Built for Taylor — cook with what you already have.</div>
+              <div>&copy; {(new Date()).getFullYear()}</div>
+            </footer>
+
+            {/* Modal */}
+            {modalMeal && (
+              <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modal-title" onClick={(e)=>{if(e.target.className.includes('modal-backdrop')) closeModal()}}>
+                <div className="modal" onKeyDown={(e)=>{if(e.key==='Escape') closeModal()}}>
+                  {modalMeal.loading && <div style={{padding:20}}>Loading...</div>}
+                  {modalMeal.error && <div style={{padding:20,color:'var(--danger)'}}>{modalMeal.error}</div>}
+
+                  {!modalMeal.loading && !modalMeal.error && (
+                    <div>
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12}}>
+                        <div>
+                          <h2 id="modal-title">{modalMeal.strMeal}</h2>
+                          <div className="meta">Category: {modalMeal.strCategory || '—'} • Area: {modalMeal.strArea || '—'}</div>
+                        </div>
+                        <div style={{display:'flex',gap:8}}>
+                          <button onClick={()=>{toggleFavorite(modalMeal);}} className="secondary">{isFavorite(modalMeal.idMeal)?'Unsave':'Save'}</button>
+                          <button onClick={closeModal}>Close</button>
+                        </div>
+                      </div>
+
+                      <img src={modalMeal.strMealThumb} alt="" style={{width:'100%',height:220,objectFit:'cover',borderRadius:8,marginTop:12}}/>
+
+                      <h3 style={{marginTop:12}}>Ingredients</h3>
+                      <div className="ingredients" style={{marginTop:8}}>
+                        {modalMeal.ingredients.map((ing,i)=> (
+                          <div className="ingredient" key={i}>{ing.ingredient} {ing.measure? '— ' + ing.measure : ''}</div>
+                        ))}
+                      </div>
+
+                      <h3 style={{marginTop:14}}>Instructions</h3>
+                      <p style={{whiteSpace:'pre-wrap',lineHeight:1.5}}>{modalMeal.strInstructions}</p>
+
+                      {modalMeal.strYoutube && (
+                        <div style={{marginTop:12}}>
+                          <a href={modalMeal.strYoutube} target="_blank" rel="noopener noreferrer">Watch video on YouTube</a>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+  </body>
+</html>
